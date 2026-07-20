@@ -1,0 +1,188 @@
+__id__ = "glyph_flash"
+__name__ = "GlyphGram"
+__description__ = "Use the Nothing Phone (2) Glyph Interface as lighting while recording Telegram video messages. Requires GlyphGram Companion."
+__author__ = "@M0zy1"
+__version__ = "1.0.1"
+__min_version__ = "12.5.1"
+__icon__ = "GlyphGram/0"
+
+from android.content import Intent
+from android.graphics import Color
+from android.os import Build
+from android.view import Gravity
+from android.widget import TextView
+from java.lang import Class as JClass
+
+from android_utils import OnClickListener, log as android_log
+from base_plugin import BasePlugin, MethodHook
+from org.telegram.messenger import AndroidUtilities, ApplicationLoader
+from org.telegram.ui.Components import LayoutHelper
+
+
+COMPANION_PACKAGE = "dev.glyphgram.companion"
+COMPANION_SERVICE = "dev.glyphgram.companion.GlyphService"
+ACTION_ON = "dev.glyphgram.companion.GLYPH_ON"
+ACTION_OFF = "dev.glyphgram.companion.GLYPH_OFF"
+BUTTON_TAG = "glyph_flash_button_v1"
+
+_states = {}
+_plugin = None
+
+
+def _log(message):
+    android_log("[glyph_flash] " + str(message))
+
+
+def _key(view):
+    return int(view.hashCode())
+
+
+def _send_command(action):
+    try:
+        context = ApplicationLoader.applicationContext
+        intent = Intent()
+        intent.setClassName(COMPANION_PACKAGE, COMPANION_SERVICE)
+        intent.setAction(action)
+        if Build.VERSION.SDK_INT >= 26:
+            context.startForegroundService(intent)
+        else:
+            context.startService(intent)
+        return True
+    except Exception as error:
+        _log("Companion command failed: " + str(error))
+        return False
+
+
+def _set_button_state(button, armed):
+    button.setTextColor(Color.parseColor("#2FE68A") if armed else Color.WHITE)
+    button.setAlpha(1.0 if armed else 0.82)
+
+
+def _read_boolean_field(obj, field_name):
+    """Read a private Java boolean field without newer hook_utils helpers."""
+    clazz = obj.getClass()
+    while clazz is not None:
+        try:
+            field = clazz.getDeclaredField(field_name)
+            field.setAccessible(True)
+            return bool(field.getBoolean(obj))
+        except Exception:
+            clazz = clazz.getSuperclass()
+    return False
+
+
+def _sync(view):
+    state = _states.get(_key(view))
+    if state is None:
+        return
+    try:
+        recording = _read_boolean_field(view, "recording")
+    except Exception:
+        recording = False
+    should_be_on = bool(state["armed"] and recording)
+    if should_be_on == state["active"]:
+        return
+    # Record the requested state even if the companion is missing, otherwise
+    # onDraw would retry and write to log on every rendered frame.
+    _send_command(ACTION_ON if should_be_on else ACTION_OFF)
+    state["active"] = should_be_on
+
+
+def _turn_off(view, remove=False):
+    key = _key(view)
+    state = _states.get(key)
+    if state is not None and state["active"]:
+        _send_command(ACTION_OFF)
+        state["active"] = False
+    if remove:
+        _states.pop(key, None)
+
+
+def _attach_button(view):
+    key = _key(view)
+    if key in _states:
+        return
+    layout = view.getButtonsLayout()
+    for index in range(layout.getChildCount()):
+        child = layout.getChildAt(index)
+        if str(child.getTag()) == BUTTON_TAG:
+            return
+
+    button = TextView(view.getContext())
+    button.setTag(BUTTON_TAG)
+    button.setText("✦")
+    button.setTextSize(27.0)
+    button.setGravity(Gravity.CENTER)
+    button.setContentDescription("Glyph lighting")
+    button.setSingleLine(True)
+    _states[key] = {"armed": False, "active": False, "button": button, "view": view}
+    _set_button_state(button, False)
+
+    def on_click(_):
+        state = _states.get(key)
+        if state is None:
+            return
+        state["armed"] = not state["armed"]
+        _set_button_state(button, state["armed"])
+        if not state["armed"] and state["active"]:
+            _send_command(ACTION_OFF)
+            state["active"] = False
+        else:
+            _sync(view)
+
+    button.setOnClickListener(OnClickListener(on_click))
+    layout.addView(button, LayoutHelper.createLinear(44, 44))
+    layout.requestLayout()
+
+
+class GlyphFlashPlugin(BasePlugin):
+    def on_plugin_load(self):
+        global _plugin
+        _plugin = self
+        cls = JClass.forName("org.telegram.ui.Components.InstantCameraView")
+        plugin = self
+
+        class ConstructorHook(MethodHook):
+            def after_hooked_method(self, param):
+                try:
+                    _attach_button(param.thisObject)
+                except Exception as error:
+                    _log("Button injection failed: " + str(error))
+
+        class DrawHook(MethodHook):
+            def after_hooked_method(self, param):
+                try:
+                    _sync(param.thisObject)
+                except Exception as error:
+                    _log("State sync failed: " + str(error))
+
+        class StopHook(MethodHook):
+            def before_hooked_method(self, param):
+                _turn_off(param.thisObject, False)
+
+        class DetachHook(MethodHook):
+            def before_hooked_method(self, param):
+                _turn_off(param.thisObject, True)
+
+        for constructor in cls.getDeclaredConstructors():
+            plugin.hook_method(constructor, ConstructorHook())
+
+        for method in cls.getDeclaredMethods():
+            name = str(method.getName())
+            if name == "onDraw":
+                plugin.hook_method(method, DrawHook())
+            elif name in ("send", "cancel", "destroy"):
+                plugin.hook_method(method, StopHook())
+            elif name == "onDetachedFromWindow":
+                plugin.hook_method(method, DetachHook())
+
+        _log("GlyphGram 1.0.1 loaded for AyuGram 12.5.1")
+
+    def on_plugin_unload(self):
+        global _plugin
+        for state in list(_states.values()):
+            if state["active"]:
+                _send_command(ACTION_OFF)
+                break
+        _states.clear()
+        _plugin = None

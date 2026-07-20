@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.glyphgram.companion">
+    <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:allowBackup="false"
+        android:label="GlyphGram Companion"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- GDK 2.0 still dereferences this metadata even though Android 16
+             no longer requires an issued production key. -->
+        <meta-data android:name="NothingKey" android:value="test" />
+        <meta-data android:name="TargetDevice" android:value="A065" />
+        <meta-data android:name="targetNothingSDKVersion" android:value="140101" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".GlyphService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Controls Glyph lighting while recording a Telegram video message" />
+        </service>
+    </application>
+</manifest>
